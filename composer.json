@@ -1,0 +1,34 @@
+{
+    "name": "danvick/yii2-opentelemetry",
+    "description": "OpenTelemetry instrumentation for Yii2 applications",
+    "type": "yii2-extension",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Danvick Miller",
+            "email": "danvick@infinitysoft.io"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "danvick\\yii2\\otel\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "danvick\\yii2\\otel\\tests\\": "tests/"
+        }
+    },
+    "require": {
+        "php": ">=8.0",
+        "yiisoft/yii2": ">=2.0.16 <2.1.0",
+        "open-telemetry/sdk": "^1.0 || 2.x-dev"
+    },
+    "suggest": {
+        "ext-opentelemetry": "Required for auto-instrumentation and context propagation",
+        "yiisoft/yii2-queue": "Required for queue job instrumentation",
+        "yiisoft/yii2-redis": "Required for cache instrumentation with InstrumentedCache"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
