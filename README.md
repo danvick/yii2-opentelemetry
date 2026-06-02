@@ -290,7 +290,7 @@ When `logBridge=true` and `OTEL_LOGS_EXPORTER=otlp`, Yii2 log messages are forwa
 - **Level filtering** — defaults to `WARNING` + `ERROR` in production; automatically upgrades to `INFO` + above when `YII_ENV=dev`
 - **Category exclusions** — noisy internal Yii categories (`yii\db\Command`, `yii\web\HttpException:404`, `yii\debug\*`) are excluded by default since they are already captured as spans
 - **Structured exception formatting** — `Throwable` bodies are serialised with class, message, and full stack trace, plus structured `exception.type`, `exception.message`, and `exception.stacktrace` attributes
-- **Near-real-time flushing** — log dispatcher flushes every 50 messages
+- **End-of-request flushing** — uses Yii's default flush behaviour (at request shutdown) to avoid blocking mid-request network calls to the collector
 
 ## Custom Span Attributes
 

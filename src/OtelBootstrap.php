@@ -546,7 +546,6 @@ class OtelBootstrap extends Component implements BootstrapInterface
             );
         }
 
-        $app->getLog()->flushInterval = 50;
         $app->getLog()->targets[] = $logTarget;
     }
 
