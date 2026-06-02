@@ -5,13 +5,18 @@ namespace danvick\yii2\otel;
 use OpenTelemetry\API\Behavior\Internal\Logging;
 use OpenTelemetry\API\Globals;
 use OpenTelemetry\API\Logs\LoggerInterface;
+use OpenTelemetry\API\Metrics\CounterInterface;
+use OpenTelemetry\API\Metrics\HistogramInterface;
+use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\API\Trace\SpanInterface;
 use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\API\Trace\TracerInterface;
+use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\ScopeInterface;
 use Yii;
 use yii\base\ActionEvent;
+use yii\log\Logger;
 use yii\base\Application;
 use yii\base\BootstrapInterface;
 use yii\base\Component;
@@ -86,6 +91,14 @@ class OtelBootstrap extends Component implements BootstrapInterface
     /** @var ScopeInterface|null The scope for the active root span */
     private ?ScopeInterface $rootScope = null;
 
+    // Metrics instruments
+    private ?CounterInterface $requestCounter = null;
+    private ?CounterInterface $errorCounter = null;
+    private ?HistogramInterface $requestDuration = null;
+
+    /** @var float|null Request start time in seconds with microsecond precision */
+    private ?float $requestStartTime = null;
+
     /**
      * Checks whether the OTEL PHP extension is loaded.
      * Overridable in tests.
@@ -125,12 +138,31 @@ class OtelBootstrap extends Component implements BootstrapInterface
         // Obtain providers from OTEL SDK globals (Requirement 4.1, 4.2)
         $tracerProvider = Globals::tracerProvider();
         $loggerProvider = Globals::loggerProvider();
+        $meterProvider = Globals::meterProvider();
 
         // Resolve service name: property → OTEL_SERVICE_NAME env var (Requirement 3.1, 3.2, 3.3)
         $scopeName = $this->resolveServiceName();
 
         $this->tracer = $tracerProvider->getTracer($scopeName);
         $this->logger = $loggerProvider->getLogger($scopeName);
+
+        // Initialise metrics instruments
+        $meter = $meterProvider->getMeter($scopeName);
+        $this->requestCounter = $meter->createCounter(
+            'http.server.requests',
+            '{request}',
+            'Total number of HTTP requests handled'
+        );
+        $this->errorCounter = $meter->createCounter(
+            'http.server.errors',
+            '{error}',
+            'Total number of HTTP requests that resulted in a 5xx error'
+        );
+        $this->requestDuration = $meter->createHistogram(
+            'http.server.duration',
+            'ms',
+            'Duration of HTTP requests in milliseconds'
+        );
 
         // Register root span lifecycle
         $this->registerRootSpanLifecycle($app);
@@ -221,7 +253,13 @@ class OtelBootstrap extends Component implements BootstrapInterface
         $method = $request->getMethod();
         $spanName = "HTTP {$method}";
 
+        // Extract W3C traceparent/tracestate from incoming request headers
+        // so this span becomes a child of any upstream trace
+        $propagator = Globals::propagator();
+        $parentContext = $propagator->extract($request->getHeaders()->toArray());
+
         $span = $this->tracer->spanBuilder($spanName)
+            ->setParent($parentContext)
             ->setSpanKind(SpanKind::KIND_SERVER)
             ->setAttribute('http.method', $method)
             ->setAttribute('http.url', $request->getAbsoluteUrl())
@@ -234,6 +272,7 @@ class OtelBootstrap extends Component implements BootstrapInterface
 
         $this->rootSpan = $span;
         $this->rootScope = $scope;
+        $this->requestStartTime = microtime(true);
 
         // Invoke SpanAttributeProviderInterface providers (Requirement 8.3, 8.4, 8.5)
         $this->applySpanAttributeProviders($span);
@@ -252,10 +291,32 @@ class OtelBootstrap extends Component implements BootstrapInterface
             return;
         }
 
-        // Set response status code
+        $statusCode = 0;
         $response = Yii::$app->getResponse();
         if ($response instanceof Response) {
-            $this->rootSpan->setAttribute('http.status_code', $response->getStatusCode());
+            $statusCode = $response->getStatusCode();
+            $this->rootSpan->setAttribute('http.status_code', $statusCode);
+        }
+
+        // Record metrics
+        $method = Yii::$app->getRequest()->getMethod();
+        $route = Span::getCurrent()->getName(); // RouteResolver has renamed it by now
+        $metricAttributes = [
+            'http.method' => $method,
+            'http.route' => $route,
+            'http.status_code' => (string) $statusCode,
+        ];
+
+        $this->requestCounter?->add(1, $metricAttributes);
+
+        if ($statusCode >= 500) {
+            $this->errorCounter?->add(1, $metricAttributes);
+        }
+
+        if ($this->requestStartTime !== null) {
+            $durationMs = (microtime(true) - $this->requestStartTime) * 1000;
+            $this->requestDuration?->record($durationMs, $metricAttributes);
+            $this->requestStartTime = null;
         }
 
         $this->endRootSpan();
@@ -465,17 +526,27 @@ class OtelBootstrap extends Component implements BootstrapInterface
     }
 
     /**
-     * Registers the OtelLogTarget when OTEL_LOGS_EXPORTER is set to 'otlp'.
+     * Registers the OtelLogTarget as a Yii2 log target.
+     *
+     * The SDK handles the no-op case when OTEL_LOGS_EXPORTER is not 'otlp',
+     * so no guard is needed here — emit() becomes a no-op automatically.
      *
      * Requirement: 10.6
      */
     private function registerLogTarget(Application $app): void
     {
-        if ($this->getEnv('OTEL_LOGS_EXPORTER') !== 'otlp') {
-            return;
+        $logTarget = new OtelLogTarget($this->logger);
+
+        // In development, ship everything from INFO upward for full visibility.
+        // In production the target defaults to WARNING | ERROR only.
+        $env = $this->getEnv('YII_ENV');
+        if ($env === 'dev' || $env === 'development') {
+            $logTarget->setLevels(
+                Logger::LEVEL_ERROR | Logger::LEVEL_WARNING | Logger::LEVEL_INFO
+            );
         }
 
-        $logTarget = new OtelLogTarget($this->logger);
+        $app->getLog()->flushInterval = 50;
         $app->getLog()->targets[] = $logTarget;
     }
 

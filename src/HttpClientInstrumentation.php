@@ -2,10 +2,12 @@
 
 namespace danvick\yii2\otel;
 
+use OpenTelemetry\API\Globals;
 use OpenTelemetry\API\Trace\SpanInterface;
 use OpenTelemetry\API\Trace\SpanKind;
 use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\API\Trace\TracerInterface;
+use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\ScopeInterface;
 use SplStack;
 use yii\base\Event;
@@ -94,6 +96,13 @@ class HttpClientInstrumentation
                 ->startSpan();
 
             $scope = $span->activate();
+
+            // Inject W3C traceparent/tracestate into outbound request headers
+            $carrier = [];
+            Globals::propagator()->inject($carrier, null, Context::getCurrent());
+            foreach ($carrier as $headerName => $headerValue) {
+                $request->addHeaders([$headerName => $headerValue]);
+            }
 
             self::$spanStack->push(['span' => $span, 'scope' => $scope]);
         } catch (\Throwable $e) {
