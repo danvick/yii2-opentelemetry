@@ -16,7 +16,7 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "danvick\\yii2\\otel\\tests\\": "tests/"
+            "common\\tests\\unit\\otel\\": "tests/unit/otel/"
         }
     },
     "require": {
@@ -24,11 +24,25 @@
         "yiisoft/yii2": ">=2.0.16 <2.1.0",
         "open-telemetry/sdk": "^1.0 || 2.x-dev"
     },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5",
+        "yiisoft/yii2-redis": "^2.0",
+        "yiisoft/yii2-queue": "^2.3",
+        "yiisoft/yii2-httpclient": "^2.0"
+    },
     "suggest": {
         "ext-opentelemetry": "Required for auto-instrumentation and context propagation",
+        "ext-protobuf": "Faster serialisation for OTLP export",
         "yiisoft/yii2-queue": "Required for queue job instrumentation",
-        "yiisoft/yii2-redis": "Required for cache instrumentation with InstrumentedCache"
+        "yiisoft/yii2-redis": "Required for cache instrumentation with InstrumentedCache",
+        "yiisoft/yii2-httpclient": "Required for HTTP client instrumentation"
     },
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://asset-packagist.org"
+        }
+    ],
     "minimum-stability": "dev",
     "prefer-stable": true
 }
