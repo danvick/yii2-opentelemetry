@@ -1,9 +1,6 @@
 # Dependencies
 /vendor/
 
-# Composer lock (not committed for libraries)
-composer.lock
-
 # macOS
 .DS_Store
 
@@ -15,6 +12,3 @@ composer.lock
 # PHPUnit
 .phpunit.result.cache
 /coverage/
-
-# Kiro
-.kiro/
