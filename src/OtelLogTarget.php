@@ -23,7 +23,6 @@ use yii\log\Target;
  * Default behaviour:
  * - Only ships WARNING and ERROR levels (DEBUG/TRACE/INFO are too noisy by default)
  * - Excludes internal Yii categories already captured as spans (db, http, profile)
- * - Flushes every 50 messages for near-real-time visibility
  *
  * Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6
  */
@@ -56,7 +55,6 @@ class OtelLogTarget extends Target
     {
         $this->logger = $logger;
 
-        // Flush every 50 messages for near-real-time visibility in SigNoz
         $this->logVars = [];
 
         parent::__construct($config);

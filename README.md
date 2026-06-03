@@ -157,9 +157,9 @@ Add `OtelBootstrap` to your application's bootstrap array. In a Yii2 Advanced Te
         'instrumentAuth'       => true,
         'instrumentMail'       => true,
         'logBridge'            => true,   // INFO + WARNING + ERROR in dev
-        'dbConnections'        => ['db', 'masterDb', 'statsDb'],
+        'dbConnections'        => ['db'],
         'spanAttributeProviders' => [
-            \app\components\TenantSpanAttributes::class,
+            \app\components\UserContextSpanAttributes::class,
         ],
     ],
 ],
@@ -181,9 +181,9 @@ Add `OtelBootstrap` to your application's bootstrap array. In a Yii2 Advanced Te
         'instrumentAuth'       => false,
         'instrumentMail'       => true,
         'logBridge'            => true,   // WARNING + ERROR only in prod
-        'dbConnections'        => ['db', 'masterDb', 'statsDb'],
+        'dbConnections'        => ['db'],
         'spanAttributeProviders' => [
-            \app\components\TenantSpanAttributes::class,
+            \app\components\UserContextSpanAttributes::class,
         ],
     ],
 ],
@@ -250,7 +250,7 @@ All three are tagged with `http.method`, `http.route`, and `http.status_code`.
 
 | Span | Attributes |
 |---|---|
-| `VIEW tenants/index` / `VIEW layouts/main` | `view.file` |
+| `VIEW site/index` / `VIEW layouts/main` | `view.file` |
 
 Nested views produce a parent-child hierarchy: layout → content → partials.
 
@@ -258,8 +258,8 @@ Nested views produce a parent-child hierarchy: layout → content → partials.
 
 | Span | Attributes |
 |---|---|
-| `AR SAVE Tenant` | `ar.model`, `ar.operation=save`, `ar.is_new` |
-| `AR DELETE Student` | `ar.model`, `ar.operation=delete` |
+| `AR SAVE Post` | `ar.model`, `ar.operation=save`, `ar.is_new` |
+| `AR DELETE Comment` | `ar.model`, `ar.operation=delete` |
 
 ### instrumentHttpClient
 
@@ -299,18 +299,18 @@ Inject application-specific attributes into root spans by implementing `SpanAttr
 ```php
 use danvick\yii2\otel\SpanAttributeProviderInterface;
 
-class TenantSpanAttributes implements SpanAttributeProviderInterface
+class UserContextSpanAttributes implements SpanAttributeProviderInterface
 {
     public function getAttributes(): array
     {
-        $tenant = Yii::$app->tenant ?? null;
-        if ($tenant === null) {
+        $user = Yii::$app->user ?? null;
+        if ($user === null || $user->isGuest) {
             return [];
         }
 
         return [
-            'tenant.id'   => $tenant->id,
-            'tenant.name' => $tenant->name,
+            'user.id'    => $user->id,
+            'user.email' => $user->identity->email ?? null,
         ];
     }
 }
