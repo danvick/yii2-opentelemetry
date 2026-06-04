@@ -85,7 +85,7 @@ class DbInstrumentation
 
             $connection = $app->get($name, false);
             if ($connection instanceof Connection && $connection->getIsActive()) {
-                $connection->commandClass = InstrumentedCommand::class;
+                self::swapCommandClass($connection);
             }
         }
     }
@@ -100,6 +100,22 @@ class DbInstrumentation
     {
         /** @var Connection $connection */
         $connection = $event->sender;
+        self::swapCommandClass($connection);
+    }
+
+    /**
+     * Swaps a connection's commandClass to InstrumentedCommand, but only if it
+     * hasn't already been instrumented. Skips if the current commandClass already
+     * is or extends InstrumentedCommand, so custom subclasses are never overwritten.
+     *
+     * @param Connection $connection The DB connection to instrument
+     */
+    private static function swapCommandClass(Connection $connection): void
+    {
+        $current = $connection->commandClass;
+        if ($current === InstrumentedCommand::class || \is_subclass_of($current, InstrumentedCommand::class)) {
+            return;
+        }
         $connection->commandClass = InstrumentedCommand::class;
     }
 

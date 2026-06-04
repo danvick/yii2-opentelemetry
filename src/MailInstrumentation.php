@@ -59,6 +59,16 @@ class MailInstrumentation
         }
 
         try {
+            // If a previous span was never ended (e.g. exception between before/after
+            // events), clean it up before starting a new one to prevent span leaks
+            // and incorrect parent-child nesting for subsequent operations.
+            if (self::$mailSpan !== null) {
+                self::$mailSpan->end();
+                self::$mailSpan = null;
+                self::$mailScope?->detach();
+                self::$mailScope = null;
+            }
+
             $message = $event->message;
             $spanBuilder = self::$tracer->spanBuilder('MAIL SEND');
 

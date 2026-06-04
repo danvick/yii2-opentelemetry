@@ -64,6 +64,14 @@ class AuthInstrumentation
         }
 
         try {
+            // Clean up any leaked span from a previous login that threw before after-login
+            if (self::$loginSpan !== null) {
+                self::$loginSpan->end();
+                self::$loginSpan = null;
+                self::$loginScope?->detach();
+                self::$loginScope = null;
+            }
+
             $spanBuilder = self::$tracer->spanBuilder('AUTH LOGIN');
 
             // Set auth.user_id if identity is available
@@ -122,6 +130,14 @@ class AuthInstrumentation
         }
 
         try {
+            // Clean up any leaked span from a previous logout that threw before after-logout
+            if (self::$logoutSpan !== null) {
+                self::$logoutSpan->end();
+                self::$logoutSpan = null;
+                self::$logoutScope?->detach();
+                self::$logoutScope = null;
+            }
+
             $spanBuilder = self::$tracer->spanBuilder('AUTH LOGOUT');
 
             // Set auth.user_id if identity is available

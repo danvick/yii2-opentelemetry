@@ -14,6 +14,7 @@ use OpenTelemetry\API\Trace\TraceFlags;
 use OpenTelemetry\API\Trace\TracerInterface;
 use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\Context\ScopeInterface;
+use yii\caching\CacheInterface;
 use yii\queue\ExecEvent;
 use yii\queue\PushEvent;
 use yii\queue\Queue;
@@ -250,6 +251,19 @@ class MockJob extends \yii\base\BaseObject implements \yii\queue\JobInterface
 
 
 /**
+ * A mock job that extends Yii2 Component without declaring $_otelTraceContext.
+ * Used to test the fallback path where direct property injection is rejected.
+ */
+class MockComponentJob extends \yii\base\Component implements \yii\queue\JobInterface
+{
+    public function execute($queue): void
+    {
+        // no-op
+    }
+}
+
+
+/**
  * A mock MultiTenantJob for testing tenant attribute propagation.
  * Extends MultiTenantJob but overrides init() to avoid Yii app dependencies.
  */
@@ -357,7 +371,8 @@ class QueueInstrumentationTest extends \PHPUnit\Framework\TestCase
     }
 
     /**
-     * Resets QueueInstrumentation static state (tracer, activeJobSpan, activeJobScope).
+     * Resets QueueInstrumentation static state (tracer, activeJobSpan, activeJobScope,
+     * contextStore, cacheOverride).
      */
     private function resetQueueInstrumentation(): void
     {
@@ -378,6 +393,25 @@ class QueueInstrumentationTest extends \PHPUnit\Framework\TestCase
             $scopeVal->detach();
         }
         $scopeProp->setValue(null, null);
+
+        $contextStore = $ref->getProperty('contextStore');
+        $contextStore->setAccessible(true);
+        $contextStore->setValue(null, []);
+
+        $cacheOverride = $ref->getProperty('cacheOverride');
+        $cacheOverride->setAccessible(true);
+        $cacheOverride->setValue(null, null);
+    }
+
+    /**
+     * Injects a mock cache into QueueInstrumentation via reflection.
+     */
+    private function injectCache(CacheInterface $cache): void
+    {
+        $ref = new \ReflectionClass(QueueInstrumentation::class);
+        $prop = $ref->getProperty('cacheOverride');
+        $prop->setAccessible(true);
+        $prop->setValue(null, $cache);
     }
 
     /**
@@ -387,6 +421,18 @@ class QueueInstrumentationTest extends \PHPUnit\Framework\TestCase
     {
         $event = new PushEvent();
         $event->job = $job;
+        return $event;
+    }
+
+    /**
+     * Creates a PushEvent with the given job and a pre-assigned job ID
+     * (simulates the state after the queue driver assigns an ID, i.e. EVENT_AFTER_PUSH).
+     */
+    private function createPushEventWithId($job, string $id): PushEvent
+    {
+        $event = new PushEvent();
+        $event->job = $job;
+        $event->id = $id;
         return $event;
     }
 
@@ -689,5 +735,145 @@ class QueueInstrumentationTest extends \PHPUnit\Framework\TestCase
             $this->recordingSpan->ended,
             'Span must be ended after error event'
         );
+    }
+
+    // =========================================================================
+    // Component job fallback: $contextStore → cache via job ID
+    // =========================================================================
+
+    /**
+     * Test: Component job context is stored in cache on after-push and resolved on exec.
+     *
+     * Simulates a Yii2 Component job (no $_otelTraceContext property) pushed within
+     * an active trace. Verifies that:
+     * - handleBeforePush falls back to $contextStore (no crash)
+     * - handleAfterPush migrates to cache using the job ID as key
+     * - handleBeforeExec resolves context from cache and creates a SpanLink
+     * - handleAfterExec deletes the cache entry
+     */
+    public function testComponentJobContextMigratedToCacheAndResolvedOnExec(): void
+    {
+        $traceId = $this->randomTraceId();
+        $spanId = $this->randomSpanId();
+        $jobId = 'job-' . uniqid();
+
+        // Activate a test span with valid context
+        $spanContext = SpanContext::create($traceId, $spanId, TraceFlags::SAMPLED);
+        $testSpan = new QueueTestSpan($spanContext);
+        $this->scope = $testSpan->activate();
+
+        // Mock cache — expect set on after-push, get on exec, delete on after-exec
+        $cache = $this->createMock(CacheInterface::class);
+        $cacheKey = 'otel_queue_ctx_' . $jobId;
+        $expectedContext = ['trace_id' => $traceId, 'span_id' => $spanId];
+
+        $cache->expects($this->once())
+            ->method('set')
+            ->with($cacheKey, $expectedContext, $this->greaterThan(0));
+
+        $cache->expects($this->once())
+            ->method('get')
+            ->with($cacheKey)
+            ->willReturn($expectedContext);
+
+        $cache->expects($this->once())
+            ->method('delete')
+            ->with($cacheKey);
+
+        $this->injectCache($cache);
+
+        // Push phase
+        $job = new MockComponentJob();
+        $pushEvent = $this->createPushEvent($job);
+        QueueInstrumentation::handleBeforePush($pushEvent);
+
+        // After-push: job ID is now assigned
+        $afterPushEvent = $this->createPushEventWithId($job, $jobId);
+        QueueInstrumentation::handleAfterPush($afterPushEvent);
+
+        // Detach push-time scope
+        $this->scope->detach();
+        $this->scope = null;
+
+        // Exec phase
+        $tracer = $this->createRecordingTracer();
+        $this->injectTracer($tracer);
+
+        $execEvent = $this->createExecEvent($job);
+        $execEvent->id = $jobId;
+        QueueInstrumentation::handleBeforeExec($execEvent);
+
+        // SpanLink should have been added with the correct context
+        $this->assertCount(1, $this->recordingBuilder->links, 'SpanLink should be added from cached context');
+        $this->assertSame($traceId, $this->recordingBuilder->links[0]->getTraceId());
+        $this->assertSame($spanId, $this->recordingBuilder->links[0]->getSpanId());
+
+        // After-exec: cache entry should be deleted
+        QueueInstrumentation::handleAfterExec($execEvent);
+    }
+
+    /**
+     * Test: handleAfterError deletes the cache entry.
+     *
+     * Verifies that a cached context entry is cleaned up even when the job fails.
+     */
+    public function testCacheEntryDeletedOnError(): void
+    {
+        $jobId = 'job-' . uniqid();
+        $cacheKey = 'otel_queue_ctx_' . $jobId;
+
+        $cache = $this->createMock(CacheInterface::class);
+        $cache->expects($this->once())
+            ->method('get')
+            ->with($cacheKey)
+            ->willReturn(false); // no context stored, that's fine
+
+        $cache->expects($this->once())
+            ->method('delete')
+            ->with($cacheKey);
+
+        $this->injectCache($cache);
+
+        $tracer = $this->createRecordingTracer();
+        $this->injectTracer($tracer);
+
+        $job = new MockComponentJob();
+        $execEvent = $this->createExecEvent($job, new \RuntimeException('fail'));
+        $execEvent->id = $jobId;
+
+        QueueInstrumentation::handleBeforeExec($execEvent);
+        QueueInstrumentation::handleAfterError($execEvent);
+    }
+
+    /**
+     * Test: handleAfterPush is a no-op when cache is not configured.
+     *
+     * Verifies that the absence of a cache component does not cause errors
+     * and that context in $contextStore is silently discarded.
+     */
+    public function testAfterPushNoop_WhenNoCacheAvailable(): void
+    {
+        $traceId = $this->randomTraceId();
+        $spanId = $this->randomSpanId();
+
+        $spanContext = SpanContext::create($traceId, $spanId, TraceFlags::SAMPLED);
+        $testSpan = new QueueTestSpan($spanContext);
+        $this->scope = $testSpan->activate();
+
+        // No cache injected — getCache() returns null
+        $job = new MockComponentJob();
+        $pushEvent = $this->createPushEvent($job);
+        QueueInstrumentation::handleBeforePush($pushEvent);
+
+        $afterPushEvent = $this->createPushEventWithId($job, 'some-id');
+
+        // Should not throw
+        QueueInstrumentation::handleAfterPush($afterPushEvent);
+
+        $this->scope->detach();
+        $this->scope = null;
+
+        // If we reach here without an exception, the test passes
+        $this->addToAssertionCount(1);
     }
 }

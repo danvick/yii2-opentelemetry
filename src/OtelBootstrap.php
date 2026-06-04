@@ -582,11 +582,15 @@ class OtelBootstrap extends Component implements BootstrapInterface
         }
 
         if ($cache instanceof \yii\redis\Cache && !($cache instanceof InstrumentedCache)) {
-            // Already instantiated — re-register with InstrumentedCache preserving config
+            // Already instantiated — re-register with InstrumentedCache, preserving
+            // ALL relevant properties from the original instance so the replacement
+            // connects to the same Redis backend with the same configuration.
             $config = [
-                'class' => InstrumentedCache::class,
-                'keyPrefix' => $cache->keyPrefix,
-                'redis' => 'redis',
+                'class'           => InstrumentedCache::class,
+                'redis'           => $cache->redis,           // preserve actual redis reference/config
+                'keyPrefix'       => $cache->keyPrefix,
+                'defaultDuration' => $cache->defaultDuration,
+                'serializer'      => $cache->serializer,
             ];
 
             $app->set('cache', $config);
