@@ -300,7 +300,9 @@ class OtelBootstrap extends Component implements BootstrapInterface
 
         // Record metrics
         $method = Yii::$app->getRequest()->getMethod();
-        $route = Span::getCurrent()->getName(); // RouteResolver has renamed it by now
+        // Use the root span directly — RouteResolver has renamed it by now.
+        // Span::getCurrent() can return a NonRecordingSpan which has no getName().
+        $route = $this->rootSpan->getName();
         $metricAttributes = [
             'http.method' => $method,
             'http.route' => $route,
