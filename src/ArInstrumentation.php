@@ -182,12 +182,47 @@ class ArInstrumentation
             return;
         }
 
+        self::closeEntry(self::$spanStack->pop());
+    }
+
+    /**
+     * Detach the scope, then end the span.
+     *
+     * OpenTelemetry requires scopes to be detached in the reverse order they were
+     * activated, before the span is ended. Detach and end are isolated so a single
+     * out-of-order/already-detached scope cannot strand the remaining entries.
+     *
+     * @param array{span: SpanInterface, scope: ScopeInterface} $entry
+     */
+    private static function closeEntry(array $entry): void
+    {
         try {
-            $entry = self::$spanStack->pop();
-            $entry['span']->end();
             $entry['scope']->detach();
         } catch (\Throwable $e) {
-            // Silently fail
+            // Scope already detached or detached out of order — keep unwinding.
+        }
+
+        try {
+            $entry['span']->end();
+        } catch (\Throwable $e) {
+            // Silently fail — don't break AR operations.
+        }
+    }
+
+    /**
+     * Unwind any AR spans still open (e.g. stranded by a vetoed/aborted save or a
+     * nested operation), in strict LIFO order. Used as a safety net when the
+     * surrounding root span ends, so leftover AR scopes are detached before the
+     * root scope is. Safe to call when nothing is registered.
+     */
+    public static function reset(): void
+    {
+        if (self::$spanStack === null) {
+            return;
+        }
+
+        while (!self::$spanStack->isEmpty()) {
+            self::closeEntry(self::$spanStack->pop());
         }
     }
 
@@ -202,15 +237,16 @@ class ArInstrumentation
             return;
         }
 
+        $entry = self::$spanStack->pop();
+
         try {
-            $entry = self::$spanStack->pop();
             $entry['span']->recordException($exception);
             $entry['span']->setStatus(StatusCode::STATUS_ERROR, $exception->getMessage());
-            $entry['span']->end();
-            $entry['scope']->detach();
         } catch (\Throwable $e) {
-            // Silently fail
+            // Silently fail — still detach/end below.
         }
+
+        self::closeEntry($entry);
     }
 
     /**

@@ -460,6 +460,12 @@ class OtelBootstrap extends Component implements BootstrapInterface
      */
     private function endRootSpan(): void
     {
+        // Safety net: unwind any AR spans still open (e.g. stranded by a vetoed or
+        // nested save) in LIFO order so their scopes are detached before we detach
+        // the root scope — otherwise the root detach fails ("another scope should
+        // have been detached first") and crashes the request/command teardown.
+        ArInstrumentation::reset();
+
         if ($this->rootSpan !== null) {
             $this->rootSpan->end();
             $this->rootSpan = null;
