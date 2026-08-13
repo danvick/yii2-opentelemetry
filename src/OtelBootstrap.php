@@ -91,6 +91,12 @@ class OtelBootstrap extends Component implements BootstrapInterface
     /** @var ScopeInterface|null The scope for the active root span */
     private ?ScopeInterface $rootScope = null;
 
+    /**
+     * @var array<int, array{SpanInterface, ScopeInterface|null}> Outer root spans suspended by a
+     * nested console action, innermost last. Restored one per endRootSpan() call.
+     */
+    private array $suspendedRoots = [];
+
     // Metrics instruments
     private ?CounterInterface $requestCounter = null;
     private ?CounterInterface $errorCounter = null;
@@ -330,10 +336,20 @@ class OtelBootstrap extends Component implements BootstrapInterface
      *
      * Creates the root span named "console/{route}" and activates scope.
      *
+     * Console actions can nest: a controller may call runAction() from its own
+     * beforeAction() (e.g. per-tenant migrations), which re-triggers
+     * EVENT_BEFORE_ACTION. Suspend the outer root instead of overwriting it —
+     * dropping the last reference to its scope destroys it undetached, which
+     * raises "missing call to Scope::detach()" and aborts the command.
+     *
      * Requirements: 2.3, 2.5
      */
     public function handleBeforeConsoleAction(ActionEvent $event): void
     {
+        if ($this->rootSpan !== null) {
+            $this->suspendedRoots[] = [$this->rootSpan, $this->rootScope];
+        }
+
         $route = Yii::$app->requestedRoute;
         $spanName = "console/{$route}";
 
@@ -365,8 +381,10 @@ class OtelBootstrap extends Component implements BootstrapInterface
     /**
      * Shutdown function to handle unhandled exceptions.
      *
-     * Records the exception on the root span, sets ERROR status, ends span,
-     * and detaches scope.
+     * Records the exception on the root span, sets ERROR status, then ends and
+     * detaches every root span still open. Yii skips EVENT_AFTER_ACTION when a
+     * beforeAction() returns false or the action throws, so the drain is what
+     * keeps those paths from stranding an attached scope.
      *
      * Requirement: 2.7
      */
@@ -386,8 +404,12 @@ class OtelBootstrap extends Component implements BootstrapInterface
                 );
                 $this->rootSpan->recordException($exception);
                 $this->rootSpan->setStatus(StatusCode::STATUS_ERROR, $error['message']);
-                $this->endRootSpan();
             }
+        }
+
+        // endRootSpan() restores the next suspended root, so this drains the whole stack.
+        while ($this->rootSpan !== null) {
+            $this->endRootSpan();
         }
     }
 
@@ -456,7 +478,8 @@ class OtelBootstrap extends Component implements BootstrapInterface
     }
 
     /**
-     * Ends the root span and detaches its scope.
+     * Ends the root span and detaches its scope, then restores the root suspended
+     * by a nested console action (if any) so it is ended by its own EVENT_AFTER_ACTION.
      */
     private function endRootSpan(): void
     {
@@ -474,6 +497,10 @@ class OtelBootstrap extends Component implements BootstrapInterface
         if ($this->rootScope !== null) {
             $this->rootScope->detach();
             $this->rootScope = null;
+        }
+
+        if ($this->suspendedRoots !== []) {
+            [$this->rootSpan, $this->rootScope] = array_pop($this->suspendedRoots);
         }
     }
 
