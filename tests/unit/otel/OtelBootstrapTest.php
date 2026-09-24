@@ -229,4 +229,32 @@ class OtelBootstrapTest extends TestCase
             'OTEL SDK log writer should be set after bootstrap'
         );
     }
+
+    /**
+     * Test: requests whose path info matches $excludedPaths (e.g. health checks)
+     * never get a root span, so they never reach the collector.
+     */
+    public function testHandleBeforeRequestSkipsExcludedPath(): void
+    {
+        $bootstrap = new OtelBootstrap();
+        $bootstrap->excludedPaths = ['site/health-check'];
+
+        $request = $this->createMock(\yii\web\Request::class);
+        $request->method('getPathInfo')->willReturn('site/health-check');
+
+        $app = $this->createMock(\yii\web\Application::class);
+        $app->method('getRequest')->willReturn($request);
+
+        Yii::$app = $app;
+        try {
+            $bootstrap->handleBeforeRequest(new \yii\base\Event());
+        } finally {
+            Yii::$app = null;
+        }
+
+        $this->assertNull(
+            $bootstrap->getRootSpan(),
+            'No root span should be created for an excluded path'
+        );
+    }
 }

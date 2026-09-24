@@ -76,6 +76,9 @@ class OtelBootstrap extends Component implements BootstrapInterface
     /** @var array Yii2 connection component IDs to instrument */
     public array $dbConnections = ['db'];
 
+    /** @var array Request path infos (e.g. 'site/health-check') to skip tracing for */
+    public array $excludedPaths = [];
+
     /**
      * @var array Class names or component IDs implementing SpanAttributeProviderInterface.
      * Each provider's getAttributes() is called when a root span is created.
@@ -255,6 +258,13 @@ class OtelBootstrap extends Component implements BootstrapInterface
     public function handleBeforeRequest(Event $event): void
     {
         $request = Yii::$app->getRequest();
+
+        // Skip tracing entirely for excluded paths (e.g. health checks) — no root
+        // span means no parent context, so DB/cache spans created during this
+        // request fall back to their own untraced roots instead of nesting here.
+        if (in_array($request->getPathInfo(), $this->excludedPaths, true)) {
+            return;
+        }
 
         $method = $request->getMethod();
         $spanName = "HTTP {$method}";
