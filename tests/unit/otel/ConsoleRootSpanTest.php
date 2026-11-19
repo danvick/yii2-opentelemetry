@@ -103,6 +103,51 @@ class ConsoleRootSpanTest extends TestCase
         $this->assertCount(6, $this->exporter->getSpans());
     }
 
+    public function testQueueListenRunsWithNoActiveSpan(): void
+    {
+        // A root span around `queue/listen` parents every idle poll, and the batch
+        // export it triggers runs inside reserve()'s mutex ("Has not waited the lock.").
+        \Yii::$app->requestedRoute = 'queue/listen';
+
+        $this->fireBefore();
+        $this->assertFalse(Span::getCurrent()->getContext()->isValid(), 'the worker loop must have no active span');
+        $this->fireAfter();
+
+        $this->assertCount(0, $this->exporter->getSpans());
+    }
+
+    public function testExcludedRouteNestedInTracedActionHidesAndRestoresOuterSpan(): void
+    {
+        $this->fireBefore();
+        $outerSpanId = $this->currentSpanId();
+
+        \Yii::$app->requestedRoute = 'queue/listen';
+        $this->fireBefore();
+        $this->assertFalse(Span::getCurrent()->getContext()->isValid(), 'the outer span must not parent the excluded route');
+
+        \Yii::$app->requestedRoute = 'migrate/up';
+        $this->fireBefore();
+        $this->fireAfter();
+        $this->assertFalse(Span::getCurrent()->getContext()->isValid(), 'a traced action nested in an excluded one must unwind back to it');
+
+        $this->fireAfter();
+        $this->assertSame($outerSpanId, $this->currentSpanId(), 'ending the excluded route must restore the outer span');
+
+        $this->fireAfter();
+        $this->assertCount(2, $this->exporter->getSpans());
+    }
+
+    public function testShutdownDetachesAnExcludedRouteLeftOpen(): void
+    {
+        $contextSpanId = $this->currentSpanId();
+        \Yii::$app->requestedRoute = 'queue/listen';
+        $this->fireBefore();
+
+        $this->bootstrap->handleShutdown();
+
+        $this->assertSame($contextSpanId, $this->currentSpanId(), 'shutdown must detach the excluded route scope');
+    }
+
     public function testShutdownDrainsRootsLeftOpenByAVetoedAction(): void
     {
         // beforeAction() returning false skips EVENT_AFTER_ACTION entirely.

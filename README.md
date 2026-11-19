@@ -204,6 +204,8 @@ Add `OtelBootstrap` to your application's bootstrap array. In a Yii2 Advanced Te
 | `instrumentMail` | `bool` | `false` | Mail sending child spans |
 | `logBridge` | `bool` | `false` | Forward Yii2 logs to OTEL (requires `OTEL_LOGS_EXPORTER=otlp`) |
 | `dbConnections` | `array` | `['db']` | Yii2 DB connection component IDs to instrument |
+| `excludedPaths` | `array` | `[]` | Web path infos (e.g. `site/health-check`) that get no root span |
+| `excludedConsoleRoutes` | `array` | `['queue/listen']` | Console routes that get no root span. Long-running workers stay untraced between jobs, so idle polls create no spans and no span export runs inside the queue's reserve lock; each job still gets its own `JOB …` trace. |
 | `spanAttributeProviders` | `array` | `[]` | Classes implementing `SpanAttributeProviderInterface` |
 
 ## Metrics

@@ -80,6 +80,18 @@ class OtelBootstrap extends Component implements BootstrapInterface
     public array $excludedPaths = [];
 
     /**
+     * @var array Console routes (e.g. 'queue/listen') that run with no root span.
+     *
+     * A long-running worker must not hold one span open for its whole lifetime: every
+     * idle poll becomes a child span, and the batch processor exports synchronously on
+     * span end. For `queue/listen` that export lands inside the queue driver's
+     * reserve() mutex, so a slow collector holds the lock and the other workers fail
+     * with "Has not waited the lock.". With no active span, DB/cache spans are skipped;
+     * queue jobs still get their own `JOB …` root spans from QueueInstrumentation.
+     */
+    public array $excludedConsoleRoutes = ['queue/listen'];
+
+    /**
      * @var array Class names or component IDs implementing SpanAttributeProviderInterface.
      * Each provider's getAttributes() is called when a root span is created.
      */
@@ -356,11 +368,22 @@ class OtelBootstrap extends Component implements BootstrapInterface
      */
     public function handleBeforeConsoleAction(ActionEvent $event): void
     {
-        if ($this->rootSpan !== null) {
+        // An excluded route holds a scope with no span, so suspend on either.
+        if ($this->rootSpan !== null || $this->rootScope !== null) {
             $this->suspendedRoots[] = [$this->rootSpan, $this->rootScope];
         }
 
         $route = Yii::$app->requestedRoute;
+
+        // Excluded route: activate the empty root context instead of a span, so nothing
+        // inside it (not even a suspended outer root) parents spans. endRootSpan()
+        // detaches this scope like any other, keeping nesting symmetric.
+        if (in_array($route, $this->excludedConsoleRoutes, true)) {
+            $this->rootSpan = null;
+            $this->rootScope = Context::getRoot()->activate();
+            return;
+        }
+
         $spanName = "console/{$route}";
 
         $span = $this->tracer->spanBuilder($spanName)
@@ -418,7 +441,8 @@ class OtelBootstrap extends Component implements BootstrapInterface
         }
 
         // endRootSpan() restores the next suspended root, so this drains the whole stack.
-        while ($this->rootSpan !== null) {
+        // rootScope covers an excluded route, which holds a scope but no span.
+        while ($this->rootSpan !== null || $this->rootScope !== null) {
             $this->endRootSpan();
         }
     }
